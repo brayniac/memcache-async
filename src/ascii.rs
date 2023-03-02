@@ -1,6 +1,6 @@
 //! This is a simplified implementation of [rust-memcache](https://github.com/aisk/rust-memcache)
 //! ported for AsyncRead + AsyncWrite.
-use core::fmt::Display;
+
 use futures::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
@@ -122,18 +122,27 @@ where
     }
 
     /// Add a key. If the value exists, [`ErrorKind::AlreadyExists`] is returned.
-    pub async fn add<K: Display>(
+    pub async fn add<K: AsRef<[u8]>>(
         &mut self,
         key: K,
         val: &[u8],
         expiration: u32,
     ) -> Result<(), Error> {
         // Send command
-        let header = format!("add {} 0 {} {}\r\n", key, expiration, val.len());
-        self.io.write_all(header.as_bytes()).await?;
-        self.io.write_all(val).await?;
-        self.io.write_all(b"\r\n").await?;
-        self.io.flush().await?;
+        let writer = self.io.get_mut();
+        writer
+            .write_all(
+                &[
+                    b"add ",
+                    key.as_ref(),
+                    format!(" 0 {} {}\r\n", expiration, val.len()).as_bytes(),
+                    val,
+                    b"\r\n",
+                ]
+                .concat(),
+            )
+            .await?;
+        writer.flush().await?;
 
         // Read response header
         let header = {
@@ -152,18 +161,27 @@ where
     }
 
     /// Replace a key. If the value exists, [`ErrorKind::NotFound`] is returned.
-    pub async fn replace<K: Display>(
+    pub async fn replace<K: AsRef<[u8]>>(
         &mut self,
         key: K,
         val: &[u8],
         expiration: u32,
     ) -> Result<(), Error> {
         // Send command
-        let header = format!("replace {} 0 {} {}\r\n", key, expiration, val.len());
-        self.io.write_all(header.as_bytes()).await?;
-        self.io.write_all(val).await?;
-        self.io.write_all(b"\r\n").await?;
-        self.io.flush().await?;
+        let writer = self.io.get_mut();
+        writer
+            .write_all(
+                &[
+                    b"replace ",
+                    key.as_ref(),
+                    format!(" 0 {} {}\r\n", expiration, val.len()).as_bytes(),
+                    val,
+                    b"\r\n",
+                ]
+                .concat(),
+            )
+            .await?;
+        writer.flush().await?;
 
         // Read response header
         let header = {
@@ -182,17 +200,27 @@ where
     }
 
     /// Set key to given value and wait for response.
-    pub async fn set<K: Display>(
+    pub async fn set<K: AsRef<[u8]>>(
         &mut self,
         key: K,
         val: &[u8],
         expiration: u32,
     ) -> Result<(), Error> {
-        let header = format!("set {} 0 {} {}\r\n", key, expiration, val.len());
-        self.io.write_all(header.as_bytes()).await?;
-        self.io.write_all(val).await?;
-        self.io.write_all(b"\r\n").await?;
-        self.io.flush().await?;
+        // Send command
+        let writer = self.io.get_mut();
+        writer
+            .write_all(
+                &[
+                    b"set ",
+                    key.as_ref(),
+                    format!(" 0 {} {}\r\n", expiration, val.len()).as_bytes(),
+                    val,
+                    b"\r\n",
+                ]
+                .concat(),
+            )
+            .await?;
+        writer.flush().await?;
 
         // Read response header
         let header = {
@@ -210,10 +238,13 @@ where
 
     /// Increment a key by a given amount and returns the new value. If the key
     /// was not found, [`ErrorKind::NotFound`] is returned
-    pub async fn incr<K: Display>(&mut self, key: K, amt: u64) -> Result<u64, Error> {
-        let header = format!("incr {} {}\r\n", key, amt);
-        self.io.write_all(header.as_bytes()).await?;
-        self.io.flush().await?;
+    pub async fn incr<K: AsRef<[u8]>>(&mut self, key: K, amt: u64) -> Result<u64, Error> {
+        // Send command
+        let writer = self.io.get_mut();
+        writer
+            .write_all(&[b"incr ", key.as_ref(), format!(" {}\r\n", amt).as_bytes()].concat())
+            .await?;
+        writer.flush().await?;
 
         // Read response header
         let header = {
@@ -237,10 +268,13 @@ where
 
     /// Decrement a key by a given amount and returns the new value. If the key
     /// was not found, [`ErrorKind::NotFound`] is returned
-    pub async fn decr<K: Display>(&mut self, key: K, amt: u64) -> Result<u64, Error> {
-        let header = format!("decr {} {}\r\n", key, amt);
-        self.io.write_all(header.as_bytes()).await?;
-        self.io.flush().await?;
+    pub async fn decr<K: AsRef<[u8]>>(&mut self, key: K, amt: u64) -> Result<u64, Error> {
+        // Send command
+        let writer = self.io.get_mut();
+        writer
+            .write_all(&[b"decr ", key.as_ref(), format!(" {}\r\n", amt).as_bytes()].concat())
+            .await?;
+        writer.flush().await?;
 
         // Read response header
         let header = {
@@ -264,10 +298,13 @@ where
 
     /// Delete a key and wait for response. If the key was not found,
     /// [`ErrorKind::NotFound`] is returned
-    pub async fn delete<K: Display>(&mut self, key: K) -> Result<(), Error> {
-        let header = format!("delete {}\r\n", key);
-        self.io.write_all(header.as_bytes()).await?;
-        self.io.flush().await?;
+    pub async fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Error> {
+        // Send command
+        let writer = self.io.get_mut();
+        writer
+            .write_all(&[b"delete ", key.as_ref(), b"\r\n"].concat())
+            .await?;
+        writer.flush().await?;
 
         // Read response header
         let header = {
