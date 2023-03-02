@@ -121,26 +121,6 @@ where
         }
     }
 
-    /// Get up to `limit` keys which match the given prefix. Returns a [HashMap] from keys to found values.
-    /// This is not part of the Memcached standard, but some servers implement it nonetheless.
-    pub async fn get_prefix<K: Display>(
-        &mut self,
-        key_prefix: K,
-        limit: Option<usize>,
-    ) -> Result<HashMap<String, Vec<u8>>, Error> {
-        // Send command
-        let header = if let Some(limit) = limit {
-            format!("get_prefix {} {}\r\n", key_prefix, limit)
-        } else {
-            format!("get_prefix {}\r\n", key_prefix)
-        };
-        self.io.write_all(header.as_bytes()).await?;
-        self.io.flush().await?;
-
-        // Read response header
-        self.read_many_values().await
-    }
-
     /// Add a key. If the value exists, [`ErrorKind::AlreadyExists`] is returned.
     pub async fn add<K: Display>(
         &mut self,
@@ -171,26 +151,137 @@ where
         Ok(())
     }
 
-    /// Set key to given value and don't wait for response.
+    /// Replace a key. If the value exists, [`ErrorKind::NotFound`] is returned.
+    pub async fn replace<K: Display>(
+        &mut self,
+        key: K,
+        val: &[u8],
+        expiration: u32,
+    ) -> Result<(), Error> {
+        // Send command
+        let header = format!("replace {} 0 {} {}\r\n", key, expiration, val.len());
+        self.io.write_all(header.as_bytes()).await?;
+        self.io.write_all(val).await?;
+        self.io.write_all(b"\r\n").await?;
+        self.io.flush().await?;
+
+        // Read response header
+        let header = {
+            let buf = self.read_line().await?;
+            std::str::from_utf8(buf).map_err(|_| Error::from(ErrorKind::InvalidData))?
+        };
+
+        // Check response header and parse value length
+        if header.contains("ERROR") {
+            return Err(Error::new(ErrorKind::Other, header));
+        } else if header.starts_with("NOT_STORED") {
+            return Err(ErrorKind::NotFound.into());
+        }
+
+        Ok(())
+    }
+
+    /// Set key to given value and wait for response.
     pub async fn set<K: Display>(
         &mut self,
         key: K,
         val: &[u8],
         expiration: u32,
     ) -> Result<(), Error> {
-        let header = format!("set {} 0 {} {} noreply\r\n", key, expiration, val.len());
+        let header = format!("set {} 0 {} {}\r\n", key, expiration, val.len());
         self.io.write_all(header.as_bytes()).await?;
         self.io.write_all(val).await?;
         self.io.write_all(b"\r\n").await?;
         self.io.flush().await?;
+
+        // Read response header
+        let header = {
+            let buf = self.read_line().await?;
+            std::str::from_utf8(buf).map_err(|_| Error::from(ErrorKind::InvalidData))?
+        };
+
+        // Check response header
+        if header.contains("ERROR") {
+            return Err(Error::new(ErrorKind::Other, header));
+        }
+
         Ok(())
     }
 
-    /// Delete a key and don't wait for response.
-    pub async fn delete<K: Display>(&mut self, key: K) -> Result<(), Error> {
-        let header = format!("delete {} noreply\r\n", key);
+    /// Increment a key by a given amount and returns the new value. If the key
+    /// was not found, [`ErrorKind::NotFound`] is returned
+    pub async fn incr<K: Display>(&mut self, key: K, amt: u64) -> Result<u64, Error> {
+        let header = format!("incr {} {}\r\n", key, amt);
         self.io.write_all(header.as_bytes()).await?;
         self.io.flush().await?;
+
+        // Read response header
+        let header = {
+            let buf = self.read_line().await?;
+            std::str::from_utf8(buf).map_err(|_| Error::from(ErrorKind::InvalidData))?
+        };
+
+        // Check response header
+        if header.contains("ERROR") {
+            return Err(Error::new(ErrorKind::Other, header));
+        } else if header.starts_with("NOT_FOUND") {
+            return Err(ErrorKind::NotFound.into());
+        }
+
+        if let Ok(v) = header.parse::<u64>() {
+            Ok(v)
+        } else {
+            Err(Error::from(ErrorKind::InvalidData))
+        }
+    }
+
+    /// Decrement a key by a given amount and returns the new value. If the key
+    /// was not found, [`ErrorKind::NotFound`] is returned
+    pub async fn decr<K: Display>(&mut self, key: K, amt: u64) -> Result<u64, Error> {
+        let header = format!("decr {} {}\r\n", key, amt);
+        self.io.write_all(header.as_bytes()).await?;
+        self.io.flush().await?;
+
+        // Read response header
+        let header = {
+            let buf = self.read_line().await?;
+            std::str::from_utf8(buf).map_err(|_| Error::from(ErrorKind::InvalidData))?
+        };
+
+        // Check response header
+        if header.contains("ERROR") {
+            return Err(Error::new(ErrorKind::Other, header));
+        } else if header.starts_with("NOT_FOUND") {
+            return Err(ErrorKind::NotFound.into());
+        }
+
+        if let Ok(v) = header.parse::<u64>() {
+            Ok(v)
+        } else {
+            Err(Error::from(ErrorKind::InvalidData))
+        }
+    }
+
+    /// Delete a key and wait for response. If the key was not found,
+    /// [`ErrorKind::NotFound`] is returned
+    pub async fn delete<K: Display>(&mut self, key: K) -> Result<(), Error> {
+        let header = format!("delete {}\r\n", key);
+        self.io.write_all(header.as_bytes()).await?;
+        self.io.flush().await?;
+
+        // Read response header
+        let header = {
+            let buf = self.read_line().await?;
+            std::str::from_utf8(buf).map_err(|_| Error::from(ErrorKind::InvalidData))?
+        };
+
+        // Check response header
+        if header.contains("ERROR") {
+            return Err(Error::new(ErrorKind::Other, header));
+        } else if header.starts_with("NOT_FOUND") {
+            return Err(ErrorKind::NotFound.into());
+        }
+
         Ok(())
     }
 
@@ -380,22 +471,6 @@ mod tests {
         assert_eq!(map.get("foo").unwrap(), b"bar");
         assert_eq!(map.get("baz").unwrap(), b"crux");
         assert_eq!(cache.w.get_ref(), b"get foo baz blah\r\n");
-    }
-
-    #[test]
-    fn test_ascii_get_prefix() {
-        let mut cache = Cache::new();
-        cache
-            .r
-            .get_mut()
-            .extend_from_slice(b"VALUE key 0 3\r\nbar\r\nVALUE kez 44 4\r\ncrux\r\nEND\r\n");
-        let mut ascii = super::Protocol::new(&mut cache);
-        let key_prefix = "ke";
-        let map = block_on(ascii.get_prefix(&key_prefix, None)).unwrap();
-        assert_eq!(map.len(), 2);
-        assert_eq!(map.get("key").unwrap(), b"bar");
-        assert_eq!(map.get("kez").unwrap(), b"crux");
-        assert_eq!(cache.w.get_ref(), b"get_prefix ke\r\n");
     }
 
     #[test]
